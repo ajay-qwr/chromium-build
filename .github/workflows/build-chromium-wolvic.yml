@@ -50,9 +50,9 @@ jobs:
     - name: 📦 Fetch Chromium source
       run: |
         # Remove any existing chromium directory to ensure clean fetch
-        rm -rf chromium
-        mkdir -p chromium
-        cd chromium
+        rm -rf chromium src .gclient .gclient_entries
+        
+        # Create .gclient in current directory
         cat > .gclient << 'EOF'
         solutions = [
           {
@@ -67,30 +67,31 @@ jobs:
         ]
         target_os = ["android"]
         EOF
-        fetch --nohooks --no-history chromium
+        
+        # Fetch chromium (this will create the 'src' directory)
+        gclient sync --nohooks --no-history
         echo "=== Chromium fetch complete ==="
         df -h
         
     - name: 🔀 Switch to wolvic branch
       run: |
-        cd chromium/src
+        cd src
         git remote add wolvic-chromium https://github.com/Igalia/wolvic-chromium
         git fetch --depth=1 wolvic-chromium wolvic
         git checkout wolvic
         
     - name: 🛠️ Install Android build dependencies
       run: |
-        cd chromium/src
+        cd src
         sudo ./build/install-build-deps.sh --android --no-prompt --no-chromeos-fonts
         
     - name: 🎣 Run gclient hooks
       run: |
-        cd chromium
         gclient runhooks
         
     - name: ⚙️ Configure build
       run: |
-        cd chromium/src
+        cd src
         mkdir -p out/Default
         cat > out/Default/args.gn << 'EOF'
         target_os = "android"
@@ -108,7 +109,7 @@ jobs:
         
     - name: 🏗️ Build Chromium AARs (this takes 2-4 hours)
       run: |
-        cd chromium/src
+        cd src
         echo "=== Starting Chromium build at $(date) ==="
         echo "=== Disk space before build ==="
         df -h
@@ -127,20 +128,20 @@ jobs:
         
     - name: 🔍 Verify AARs were built
       run: |
-        cd chromium/src
+        cd src
         ls -lh out/Default/Content.aar
         ls -lh out/Default/ChromiumUi.aar
         
     - name: 📦 Download fix_aar.sh script
       run: |
-        cd chromium/src
+        cd src
         # Get fix_aar.sh from wolvic-chromium branch
         curl -O https://raw.githubusercontent.com/Igalia/wolvic-chromium/wolvic/fix_aar.sh
         chmod +x fix_aar.sh
         
     - name: 🔧 Fix AARs
       run: |
-        cd chromium/src
+        cd src
         ./fix_aar.sh out/Default/Content.aar
         ./fix_aar.sh out/Default/ChromiumUi.aar
         
@@ -149,14 +150,14 @@ jobs:
         mkdir -p artifacts/aars
         mkdir -p artifacts/assets
         
-        # Copy fixed AARs (they're in chromium/src root after fix_aar.sh)
-        cp chromium/src/Content.aar artifacts/aars/
-        cp chromium/src/ChromiumUi.aar artifacts/aars/
+        # Copy fixed AARs (they're in src root after fix_aar.sh)
+        cp src/Content.aar artifacts/aars/
+        cp src/ChromiumUi.aar artifacts/aars/
         
         # Copy required assets
-        cp chromium/src/out/Default/snapshot_blob.bin artifacts/assets/snapshot_blob_64.bin
-        cp chromium/src/out/Default/icudtl.dat artifacts/assets/
-        cp chromium/src/out/Default/wolvic.pak artifacts/assets/
+        cp src/out/Default/snapshot_blob.bin artifacts/assets/snapshot_blob_64.bin
+        cp src/out/Default/icudtl.dat artifacts/assets/
+        cp src/out/Default/wolvic.pak artifacts/assets/
         
         # Create README
         cat > artifacts/README.md << 'EOF'
