@@ -39,8 +39,18 @@ jobs:
         git config --global user.email "github-actions@github.com"
         git config --global user.name "GitHub Actions Bot"
         
+    - name: 💽 Check disk space before fetch
+      run: |
+        echo "=== Disk space before Chromium fetch ==="
+        df -h
+        echo ""
+        echo "Available space in GB:"
+        df -BG / | awk 'NR==2 {print $4}'
+        
     - name: 📦 Fetch Chromium source
       run: |
+        # Remove any existing chromium directory to ensure clean fetch
+        rm -rf chromium
         mkdir -p chromium
         cd chromium
         cat > .gclient << 'EOF'
@@ -58,6 +68,8 @@ jobs:
         target_os = ["android"]
         EOF
         fetch --nohooks --no-history chromium
+        echo "=== Chromium fetch complete ==="
+        df -h
         
     - name: 🔀 Switch to wolvic branch
       run: |
@@ -97,13 +109,21 @@ jobs:
     - name: 🏗️ Build Chromium AARs (this takes 2-4 hours)
       run: |
         cd chromium/src
+        echo "=== Starting Chromium build at $(date) ==="
+        echo "=== Disk space before build ==="
+        df -h
+        echo ""
         # Try building content_aar and ui_aar
         autoninja -C out/Default content_aar ui_aar || {
           # If M124 error occurs, build shell_resources first
-          echo "Build failed, trying M124 workaround..."
+          echo "⚠️ Build failed, trying M124 workaround..."
           autoninja -C out/Default content/shell:content_shell_resources_grit
+          echo "Retrying main build..."
           autoninja -C out/Default content_aar ui_aar
         }
+        echo "=== Build completed at $(date) ==="
+        echo "=== Disk space after build ==="
+        df -h
         
     - name: 🔍 Verify AARs were built
       run: |
