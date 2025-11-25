@@ -1,0 +1,180 @@
+name: Build Chromium for Wolvic YVR
+
+on:
+  workflow_dispatch:  # Manual trigger from Actions tab
+  push:
+    branches: [ main ]
+
+jobs:
+  build-chromium:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360  # 6 hours max
+    
+    steps:
+    - name: 📋 Checkout
+      uses: actions/checkout@v4
+      
+    - name: 💾 Free up disk space
+      run: |
+        # GitHub runners have ~14GB free, we need ~100GB
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo docker image prune --all --force
+        df -h
+    
+    - name: 🔧 Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y git python3 python3-pip curl lsb-release sudo
+        
+    - name: 📥 Install depot_tools
+      run: |
+        git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git $HOME/depot_tools
+        echo "$HOME/depot_tools" >> $GITHUB_PATH
+        
+    - name: ⚙️ Configure Git
+      run: |
+        git config --global user.email "github-actions@github.com"
+        git config --global user.name "GitHub Actions Bot"
+        
+    - name: 📦 Fetch Chromium source
+      run: |
+        mkdir -p chromium
+        cd chromium
+        cat > .gclient << 'EOF'
+        solutions = [
+          {
+            "name": "src",
+            "url": "https://chromium.googlesource.com/chromium/src.git",
+            "managed": False,
+            "custom_deps": {},
+            "custom_vars": {
+              "checkout_pgo_profiles": True,
+            },
+          },
+        ]
+        target_os = ["android"]
+        EOF
+        fetch --nohooks --no-history chromium
+        
+    - name: 🔀 Switch to wolvic branch
+      run: |
+        cd chromium/src
+        git remote add wolvic-chromium https://github.com/Igalia/wolvic-chromium
+        git fetch --depth=1 wolvic-chromium wolvic
+        git checkout wolvic
+        
+    - name: 🛠️ Install Android build dependencies
+      run: |
+        cd chromium/src
+        sudo ./build/install-build-deps.sh --android --no-prompt --no-chromeos-fonts
+        
+    - name: 🎣 Run gclient hooks
+      run: |
+        cd chromium
+        gclient runhooks
+        
+    - name: ⚙️ Configure build
+      run: |
+        cd chromium/src
+        mkdir -p out/Default
+        cat > out/Default/args.gn << 'EOF'
+        target_os = "android"
+        target_cpu = "arm64"
+        is_debug = false
+        is_component_build = false
+        use_allocator_shim = true
+        blink_symbol_level = 0
+        symbol_level = 1
+        ffmpeg_branding="Chrome"
+        proprietary_codecs=true
+        enable_nacl = false
+        EOF
+        gn gen out/Default
+        
+    - name: 🏗️ Build Chromium AARs (this takes 2-4 hours)
+      run: |
+        cd chromium/src
+        # Try building content_aar and ui_aar
+        autoninja -C out/Default content_aar ui_aar || {
+          # If M124 error occurs, build shell_resources first
+          echo "Build failed, trying M124 workaround..."
+          autoninja -C out/Default content/shell:content_shell_resources_grit
+          autoninja -C out/Default content_aar ui_aar
+        }
+        
+    - name: 🔍 Verify AARs were built
+      run: |
+        cd chromium/src
+        ls -lh out/Default/Content.aar
+        ls -lh out/Default/ChromiumUi.aar
+        
+    - name: 📦 Download fix_aar.sh script
+      run: |
+        cd chromium/src
+        # Get fix_aar.sh from wolvic-chromium branch
+        curl -O https://raw.githubusercontent.com/Igalia/wolvic-chromium/wolvic/fix_aar.sh
+        chmod +x fix_aar.sh
+        
+    - name: 🔧 Fix AARs
+      run: |
+        cd chromium/src
+        ./fix_aar.sh out/Default/Content.aar
+        ./fix_aar.sh out/Default/ChromiumUi.aar
+        
+    - name: 📦 Prepare artifacts
+      run: |
+        mkdir -p artifacts/aars
+        mkdir -p artifacts/assets
+        
+        # Copy fixed AARs (they're in chromium/src root after fix_aar.sh)
+        cp chromium/src/Content.aar artifacts/aars/
+        cp chromium/src/ChromiumUi.aar artifacts/aars/
+        
+        # Copy required assets
+        cp chromium/src/out/Default/snapshot_blob.bin artifacts/assets/snapshot_blob_64.bin
+        cp chromium/src/out/Default/icudtl.dat artifacts/assets/
+        cp chromium/src/out/Default/wolvic.pak artifacts/assets/
+        
+        # Create README
+        cat > artifacts/README.md << 'EOF'
+        # Chromium Build Artifacts for Wolvic YVR
+        
+        ## Contents:
+        - `aars/Content.aar` - Chromium content library
+        - `aars/ChromiumUi.aar` - Chromium UI library
+        - `assets/` - Required runtime assets
+        
+        ## Installation:
+        
+        1. Copy AARs to a directory (e.g., C:\chromium_aar\)
+        2. Add to wolvic-main\local.properties:
+           ```
+           chromium_aar=C:\\chromium_aar
+           ```
+        3. Copy assets to wolvic-main\app\src\chromium\assets\
+        4. Build Wolvic with chromium backend:
+           ```
+           gradlew assemblePfdmxrChromiumArm64Debug
+           ```
+        
+        Built with GitHub Actions for YVR headset.
+        EOF
+        
+        ls -lhR artifacts/
+        
+    - name: 📤 Upload AARs
+      uses: actions/upload-artifact@v4
+      with:
+        name: chromium-aars-wolvic-yvr
+        path: artifacts/
+        retention-days: 30
+        
+    - name: ✅ Build Complete!
+      run: |
+        echo "🎉 Chromium AARs built successfully!"
+        echo "📦 Download artifacts from the Actions tab"
+        echo "⏱️ Build time: $SECONDS seconds"
+
